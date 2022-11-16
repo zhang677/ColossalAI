@@ -65,7 +65,6 @@ def _all_to_all(tensor, comm_spec):
             output = torch.cat(tuple(output_tensor_list), comm_spec.gather_dim).contiguous()
             return output
 
-
 def _all_reduce(tensor, comm_spec, async_op=False):
     '''
     Implement all reduce operation on device mesh based on information provided by comm_spec.
@@ -78,6 +77,12 @@ def _all_reduce(tensor, comm_spec, async_op=False):
             dist.all_reduce(tensor, op=ReduceOp.SUM, group=process_group, async_op=async_op)
             return tensor
 
+def _mix_gather(tensor, comm_spec):
+    '''
+    Implement mix gather operation on device mesh based on information provided by comm_spec.
+    '''
+    pass
+                
 
 class _ReduceGrad(torch.autograd.Function):
     """
