@@ -90,6 +90,22 @@ def shard_simulator(target_pair, legal_sharding_dims):
     return shard_list_list
 
 
+def mix_gather_simulator(f_target_pair, b_target_pair):
+    '''
+    Mix-gather: Do all-gather in the 2D mesh
+    We don't allow uncontiguous layout, such as all-gather(S012)->S02 is NOT allowed.
+    e.g.:
+        mix-gather(S0, S1) -> [R, R]
+        mix-gather(S1, S0) -> [R, R]
+    '''
+    f_dim, f_shard_list = f_target_pair
+    b_dim, b_shard_list = b_target_pair
+    assert abs(f_dim - b_dim) == 1 and len(f_shard_list) == 1 and len(b_shard_list) == 1 and abs(f_shard_list[0] -
+                                                                                                 b_shard_list[0]) == 1
+
+    return [], []
+
+
 # The function is credited to PyTorch Team
 def named_params_with_colotensor(
     module: nn.Module,

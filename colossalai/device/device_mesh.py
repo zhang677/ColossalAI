@@ -199,3 +199,7 @@ class DeviceMesh:
         penalty_factor = num_devices / 2.0
         return (self.mesh_alpha[mesh_dim] + self.mesh_beta[mesh_dim] *
                 (num_devices - 1) / num_devices / num_devices * num_bytes * penalty_factor + 0.001)
+
+    def mix_gather_cost(self, num_bytes, mesh_dim):
+        num_devices = reduce(operator.mul, mesh_dim, 1)
+        return (self.mesh_alpha[0] + self.mesh_beta[0] * (num_devices - 1) / num_devices * num_bytes + 0.1)

@@ -82,6 +82,17 @@ def _all_reduce(tensor, comm_spec):
             return tensor
 
 
+def _split2d(tensor, comm_spec):
+    pass
+
+
+def _mix_gather(tensor, comm_spec):
+    '''
+    Implement mix gather operation on device mesh based on information provided by comm_spec.
+    '''
+    rank_list = comm_spec.device_mesh
+
+
 class _ReduceGrad(torch.autograd.Function):
     """
     A customized communication operation which forward is an identity operation,
@@ -207,6 +218,30 @@ class _AllToAll(torch.autograd.Function):
         return _all_to_all(grad_outputs, ctx.comm_spec), None
 
 
+class _MixGather(torch.autograd.Function):
+    """
+    A customized communication operation which forward is a mix gather operation,
+    backward is an split operation.
+
+    Args:
+        input_: input matrix.
+        comm_spec: comm_spec will give information like process group, rank list, etc.
+    """
+
+    @staticmethod
+    def symbolic(grap, input_):
+        return _mix_gather(input_)
+
+    @staticmethod
+    def forward(ctx, input_, comm_spec):
+        ctx.comm_spec = comm_spec
+        return _mix_gather(input_, comm_spec)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _split2d(grad_output, ctx.comm_spec), None
+
+
 def reduce_grad(input_, comm_spec):
     return _ReduceGrad.apply(input_, comm_spec)
 
@@ -227,12 +262,17 @@ def all_to_all(input_, comm_spec):
     return _AllToAll.apply(input_, comm_spec)
 
 
+def mix_gather_forward_split_backward(input_, comm_spec):
+    return _MixGather.apply(input_, comm_spec)
+
+
 class CollectiveCommPattern(Enum):
     GATHER_FWD_SPLIT_BWD = 'gather_fwd_split_bwd'
     ALL2ALL_FWD_ALL2ALL_BWD = 'all2all_fwd_all2all_bwd'
     SPLIT_FWD_GATHER_BWD = 'split_fwd_gather_bwd'
     ALLREDUCE_FWD_IDENTITY_BWD = 'all_reduce_fwd_identity_bwd'
     IDENTITY_FWD_ALLREDUCE_BWD = 'identity_fwd_all_reduce_bwd'
+    MIXGATHER_FWD_SPLIT_BWD = 'mix_gather_fwd_split_bwd'
 
 
 class CommSpec:
@@ -292,6 +332,10 @@ class CommSpec:
         elif self.comm_pattern == CollectiveCommPattern.IDENTITY_FWD_ALLREDUCE_BWD:
             res_list.append(f"comm_pattern:IDENTITY_FWD_ALLREDUCE_BWD, ")
             res_list.append(f"logical_process_axis:{self.logical_process_axis})")
+        elif self.comm_pattern == CollectiveCommPattern.MIXGATHER_FWD_SPLIT_BWD:
+            res_list.append(f"comm_pattern:MIXGATHER_FWD_SPLIT_BWD, ")
+            res_list.append(f"gather_dims: {self.gather_dim}, ")
+            res_list.append(f"logical_process_axes: {self.logical_process_axis})")
 
         return ''.join(res_list)
 
@@ -327,6 +371,11 @@ class CommSpec:
             forward_communication_cost = 10
             backward_communication_cost = self.device_mesh.all_gather_cost(comm_size, self.logical_process_axis)
 
+        if self.comm_pattern == CollectiveCommPattern.MIXGATHER_FWD_SPLIT_BWD:
+            forward_communication_cost = self.device_mesh.mix_gather_cost(comm_size, self.logical_process_axis)
+            # give a tiny cost to shard
+            backward_communication_cost = 10
+
         if self.forward_only:
             cost_dict["forward"] = forward_communication_cost
             cost_dict["backward"] = 0
@@ -359,4 +408,5 @@ pattern_to_func_dict = {
     CollectiveCommPattern.SPLIT_FWD_GATHER_BWD: split_forward_gather_backward,
     CollectiveCommPattern.ALLREDUCE_FWD_IDENTITY_BWD: reduce_input,
     CollectiveCommPattern.IDENTITY_FWD_ALLREDUCE_BWD: reduce_grad,
+    CollectiveCommPattern.MIXGATHER_FWD_SPLIT_BWD: mix_gather_forward_split_backward
 }

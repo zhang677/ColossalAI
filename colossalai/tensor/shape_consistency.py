@@ -7,7 +7,7 @@ import torch
 
 from colossalai.context.singleton_meta import SingletonMeta
 from colossalai.tensor.sharding_spec import ShardingSpec, ShardingSpecException
-from colossalai.tensor.utils import all_gather_simulator, all_to_all_simulator, shard_simulator
+from colossalai.tensor.utils import all_gather_simulator, all_to_all_simulator, mix_gather_simulator, shard_simulator
 
 from .comm_spec import *
 
@@ -326,6 +326,73 @@ class ShapeConsistencyManager(metaclass=SingletonMeta):
                     valid_spec_dict[new_sharding_spec] = (comm_spec, cost_dict)
                 except ShardingSpecException:
                     pass
+        return valid_spec_dict
+
+    def get_all_mix_gather(self, source_spec: ShardingSpec, orig_cost_dict: Dict[str,
+                                                                                 float]) -> Dict[ShardingSpec, float]:
+        '''
+        Get all valid sharding specs from source_spec with single mix-gather operation. and
+        accumulate commucation cost on origin cost which will finally be used in auto sharding solver.
+        For the mix-gather operation, we just care about the pairs containing two S dimensions.
+
+        Argument:
+            source_spec(ShardingSpec): the ShardingSpec of the source_spec.
+            orig_cost(Dict[str, float]): the original communication cost before this operation.
+
+        Return:
+            valid_spec_dict(Dict[ShardingSpec, float]): all valid sharding specs from source_spec with single all-to-all operation.
+
+        Example:
+            dim_partition_dict = {0: [0], 1: [1]}
+            # DistSpec:
+            #     shard_sequence: S0,S1,R
+            #     device_mesh_shape: (4, 4)
+            sharding_spec = ShardingSpec(device_mesh, entire_shape, dim_partition_dict)
+            shape_consistency_manager = ShapeConsistencyManager()
+            rst_dict = shape_consistency_manager.get_all_mix_gather_spec(sharding_spec, {'forward': 0, 'backward': 0, 'total': 0})
+            print(rst_dict)
+
+        Output:
+            {DistSpec:
+            shard_sequence: R,R,R
+            device_mesh_shape: (4, 4): 0}
+        '''
+        valid_spec_dict = {}
+        comm_pattern = CollectiveCommPattern.MIXGATHER_FWD_SPLIT_BWD
+        tensor_dims = len(source_spec.entire_shape)
+        for f_index in range(tensor_dims - 1):
+            for b_index in range(f_index + 1, tensor_dims):
+                # Only handle (S0, S1) and (S1, S0) cases
+                if f_index in source_spec.dim_partition_dict and len(source_spec.dim_partition_dict[f_index]) == 1:
+                    if b_index in source_spec.dim_partition_dict and len(source_spec.dim_partition_dict[b_index]) == 1:
+                        f_target_pair = (f_index, deepcopy(source_spec.dim_partition_dict[f_index]))
+                        b_target_pair = (b_index, deepcopy(source_spec.dim_partition_dict[b_index]))
+                        _, _ = mix_gather_simulator(f_target_pair, b_target_pair)
+                        comm_spec = CommSpec(comm_pattern,
+                                             sharding_spec=source_spec,
+                                             gather_dim=[f_index, b_index],
+                                             logical_process_axis=[f_target_pair[1][-1], b_target_pair[1][-1]],
+                                             forward_only=self.forward_only)
+
+                        # compute the communication cost with CommSpec
+                        cost_dict = comm_spec.get_comm_cost()
+                        new_dim_partition_dict = deepcopy(source_spec.dim_partition_dict)
+
+                        # The key will be popped because the related shard_list is empty
+                        new_dim_partition_dict.pop(f_index)
+                        new_dim_partition_dict.pop(b_index)
+
+                        # generate new sharding spec
+                        try:
+                            new_sharding_spec = ShardingSpec(source_spec.device_mesh,
+                                                             source_spec.entire_shape,
+                                                             dim_partition_dict=new_dim_partition_dict)
+                            for phase, cost in cost_dict.items():
+                                cost_dict[phase] = cost + orig_cost_dict[phase]
+                            valid_spec_dict[new_sharding_spec] = (comm_spec, cost_dict)
+                        except ShardingSpecException:
+                            pass
+
         return valid_spec_dict
 
     def get_all_one_step_transform_spec(self, source_spec: ShardingSpec, orig_cost_dict) -> Dict[ShardingSpec, float]:
