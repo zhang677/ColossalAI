@@ -99,8 +99,12 @@ def _mix_gather(tensor, comm_spec):
         tmp_tensor_list = [
             torch.zeros(tmp_tensor_shape, dtype=tensor.dtype, device=tensor.device) for _ in range(cat_slice[1])
         ]
+        for i in range(cat_slice[1]):
+            tmp_tensor_list[i] = torch.cat(tuple(tensor_list[i * cat_slice[0]:(i + 1) * cat_slice[0]]),
+                                           comm_spec.gather_dim[0]).contiguous()
+        output = torch.cat(tuple(tmp_tensor_list), comm_spec.gather_dim[1]).contiguous()
 
-    pass
+    return output
 
 
 class _ReduceGrad(torch.autograd.Function):
@@ -228,6 +232,17 @@ class _AllToAll(torch.autograd.Function):
         return _all_to_all(grad_outputs, ctx.comm_spec), None
 
 
+class _MixGather(torch.autograd.Function):
+
+    @staticmethod
+    def symbolic(graph, input_):
+        return _mix_gather(input_)
+
+    @staticmethod
+    def forward(ctx, input_, commspec):
+        output = _mix_gather(input_, comm_spec)
+
+
 def reduce_grad(input_, comm_spec):
     return _ReduceGrad.apply(input_, comm_spec)
 
@@ -254,6 +269,7 @@ class CollectiveCommPattern(Enum):
     SPLIT_FWD_GATHER_BWD = 'split_fwd_gather_bwd'
     ALLREDUCE_FWD_IDENTITY_BWD = 'all_reduce_fwd_identity_bwd'
     IDENTITY_FWD_ALLREDUCE_BWD = 'identity_fwd_all_reduce_bwd'
+    MIXGATHER_FWD_SPLIT_BWD = "mixgather_fwd_split_bwd"
 
 
 class CommSpec:
